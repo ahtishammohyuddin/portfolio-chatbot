@@ -8,6 +8,7 @@ unavailable, it falls back to keyword search so the bot keeps working.
 If nothing matches well, Gemini is not asked to write an answer at all.
 """
 
+import datetime
 import os
 
 import streamlit as st
@@ -39,6 +40,10 @@ MODEL = get_secret("GEMINI_MODEL", DEFAULT_MODEL)
 EMBED = get_secret("GEMINI_EMBED_MODEL", EMBED_MODEL)
 EMBED_MIN_SCORE = float(get_secret("EMBED_MIN_SCORE", str(DEFAULT_MIN_SCORE)))
 
+# Free-tier quota is shared by every visitor, so the demo caps its own use.
+MAX_PER_SESSION = int(get_secret("MAX_QUESTIONS_PER_SESSION", "15"))
+MAX_PER_DAY = int(get_secret("MAX_QUESTIONS_PER_DAY", "300"))
+
 
 @st.cache_resource
 def get_retrievers(api_key: str, embed_model: str, min_score: float):
@@ -66,6 +71,34 @@ def retrieve(question: str):
         except Exception:
             pass  # embedding call failed this time; use keywords instead
     return keyword.search(question, k=3), "keywords"
+
+
+@st.cache_resource
+def daily_counter() -> dict:
+    """One counter shared by every visitor while the app process is running."""
+    return {"day": None, "count": 0}
+
+
+def check_limits():
+    """Return a message if this question must be refused, else None.
+
+    Two caps: per visit (stops one person using it all) and per day across
+    everyone (protects the shared free quota). The per-visit cap resets if
+    someone reloads the page, so the daily cap is the real backstop.
+    """
+    if st.session_state.get("asked", 0) >= MAX_PER_SESSION:
+        return (f"That's {MAX_PER_SESSION} questions, the limit for this free demo. "
+                "To ask more, please contact Ahtisham directly.")
+    counter = daily_counter()
+    today = datetime.date.today().isoformat()
+    if counter["day"] != today:
+        counter["day"], counter["count"] = today, 0
+    if counter["count"] >= MAX_PER_DAY:
+        return ("This demo has reached its limit for today. "
+                "Please try again tomorrow, or contact Ahtisham directly.")
+    counter["count"] += 1
+    st.session_state.asked = st.session_state.get("asked", 0) + 1
+    return None
 
 
 def ask_gemini(prompt: str) -> str:
@@ -116,6 +149,15 @@ if question:
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
+
+    blocked = check_limits()
+    if blocked:
+        with st.chat_message("assistant"):
+            st.markdown(blocked)
+        st.session_state.messages.append(
+            {"role": "assistant", "content": blocked, "sources": [], "mode": "keywords"}
+        )
+        st.stop()
 
     results, mode = retrieve(question)
     sources = [

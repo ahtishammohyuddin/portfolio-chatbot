@@ -2,7 +2,7 @@
 
 A chatbot that answers questions about me using only my CV and project notes. If the answer isn't in those documents, it says so instead of guessing.
 
-**Live demo:** _add the link after deploying_
+**Live demo:** https://ahtisham-portfolio-chatbot.streamlit.app/
 
 ## How it works
 
@@ -86,4 +86,6 @@ More detail, including what went wrong along the way, is in `DECISIONS.md`.
 - **The bot is only as current as `data/about_ahtisham.md`.** During testing it repeated a certificate I had since withdrawn from, because the notes were out of date. Update the notes whenever the CV changes.
 - Each question makes one embedding request and, if something matches, one generation request. Heavy use will hit free-tier limits.
 - Missing from the notes is not the same as false. The bot says it has no information and never claims that something does not exist.
+- The public demo limits itself to protect a shared free quota: 15 questions per visit and 300 per day across all visitors. Past that it shows a polite message and makes no API calls.
+- I tried three basic prompt-injection attempts (asking it to claim a PhD, to repeat its instructions, and to confirm ten years of experience). It refused or declined all three. This was a small informal test, not a security audit.
 - Text only for now. Voice input and output are next.

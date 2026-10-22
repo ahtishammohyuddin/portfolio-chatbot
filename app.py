@@ -6,6 +6,9 @@ Flow for every question:
 Retrieval now works by MEANING (embeddings). If the embedding service is
 unavailable, it falls back to keyword search so the bot keeps working.
 If nothing matches well, Gemini is not asked to write an answer at all.
+
+GROUNDING_MODE ("off" by default) switches on validated, cited answers: see
+grounding.py. With it off, the answer path below is the original one.
 """
 
 import datetime
@@ -15,7 +18,8 @@ import streamlit as st
 
 from embed_retriever import (DEFAULT_DIMS, DEFAULT_MIN_SCORE, DEFAULT_MODEL as EMBED_MODEL,
                              EmbeddingRetriever, make_gemini_embedder)
-from rag import NO_ANSWER, SYSTEM_PROMPT, Retriever, build_prompt, load_chunks
+from grounding import answer_from_results, citation_lines, parse_mode
+from rag import SYSTEM_PROMPT, Retriever, load_chunks
 
 # Free text-generation model. Set GEMINI_MODEL in secrets.toml to change it.
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
@@ -43,6 +47,9 @@ EMBED_MIN_SCORE = float(get_secret("EMBED_MIN_SCORE", str(DEFAULT_MIN_SCORE)))
 # Free-tier quota is shared by every visitor, so the demo caps its own use.
 MAX_PER_SESSION = int(get_secret("MAX_QUESTIONS_PER_SESSION", "15"))
 MAX_PER_DAY = int(get_secret("MAX_QUESTIONS_PER_DAY", "300"))
+
+# "on" = validated, cited answers (grounding.py). Anything else = the original path.
+GROUNDING_MODE = parse_mode(get_secret("GROUNDING_MODE", "off"))
 
 
 @st.cache_resource
@@ -101,7 +108,7 @@ def check_limits():
     return None
 
 
-def ask_gemini(prompt: str) -> str:
+def ask_gemini(prompt: str, system_prompt: str = SYSTEM_PROMPT) -> str:
     from google import genai
     from google.genai import types
 
@@ -113,11 +120,31 @@ def ask_gemini(prompt: str) -> str:
         model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=system_prompt,
             temperature=0.2,  # low = stick to the facts, don't get creative
         ),
     )
     return (response.text or "").strip()
+
+
+def ask_with_spinner(prompt: str, system_prompt: str) -> str:
+    with st.spinner("Thinking..."):
+        return ask_gemini(prompt, system_prompt)
+
+
+def show_answer(text: str, plain: bool = False):
+    """Validated model text is shown as plain text, never as Markdown or HTML."""
+    if plain:
+        st.text(text)
+    else:
+        st.markdown(text)
+
+
+def show_citations(lines):
+    if lines:
+        st.caption("Quotes found in his notes:")
+        for line in lines:
+            st.text(line)
 
 
 def show_sources(sources, mode):
@@ -140,7 +167,8 @@ if "messages" not in st.session_state:
 
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
-        st.markdown(m["content"])
+        show_answer(m["content"], m.get("plain", False))
+        show_citations(m.get("citations") or [])
         show_sources(m.get("sources"), m.get("mode", "keywords"))
 
 question = st.chat_input("Ask about his skills, projects or experience...")
@@ -164,22 +192,18 @@ if question:
         {"heading": c.heading, "score": s, "text": c.text} for c, s in results
     ]
 
-    if not results:
-        answer = NO_ANSWER
-    elif not API_KEY:
-        answer = "Closest matches from his notes are shown below."
-    else:
-        try:
-            with st.spinner("Thinking..."):
-                answer = ask_gemini(build_prompt(question, results)) or NO_ANSWER
-        except Exception:  # rate limit, bad key, network...
-            answer = "Sorry, the AI service is unavailable right now. Please try again shortly."
+    outcome = answer_from_results(
+        question, results, ask_with_spinner, has_key=bool(API_KEY), mode=GROUNDING_MODE
+    )
+    citations = citation_lines(outcome.citations)
 
     # Draw the answer now, in this same run.
     with st.chat_message("assistant"):
-        st.markdown(answer)
+        show_answer(outcome.text, outcome.plain)
+        show_citations(citations)
         show_sources(sources, mode)
 
     st.session_state.messages.append(
-        {"role": "assistant", "content": answer, "sources": sources, "mode": mode}
+        {"role": "assistant", "content": outcome.text, "sources": sources, "mode": mode,
+         "plain": outcome.plain, "citations": citations}
     )
